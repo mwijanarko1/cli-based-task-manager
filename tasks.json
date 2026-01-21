@@ -1,0 +1,26 @@
+[
+  {
+    "id": "66f5775d-4501-4daf-abe4-52f417e8dddc",
+    "title": "Learn Rust Ownership",
+    "description": "Master Rust's ownership model",
+    "priority": "high",
+    "status": "done",
+    "category": null,
+    "due_date": null,
+    "created_at": "2026-01-21T09:54:31.889530Z",
+    "updated_at": "2026-01-21T09:55:10.153683Z",
+    "completed_at": "2026-01-21T09:55:10.153682Z"
+  },
+  {
+    "id": "369f5772-d64e-41a1-bc0a-0feb21d14529",
+    "title": "Celebrate completion!",
+    "description": "Successfully built an enterprise CLI tool from ownership basics",
+    "priority": "high",
+    "status": "todo",
+    "category": "milestone",
+    "due_date": null,
+    "created_at": "2026-01-21T09:56:32.155174Z",
+    "updated_at": "2026-01-21T09:56:32.155174Z",
+    "completed_at": null
+  }
+]
