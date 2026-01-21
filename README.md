@@ -2,22 +2,22 @@
 
 A task management CLI tool built in Rust, featuring comprehensive task lifecycle management, data persistence, and error handling.
 
-## 🚀 Features
+## Features
 
-- ✅ **Task Management**: Add, update, complete, start, and cancel tasks
-- 🔍 **Advanced Filtering**: Filter by status, priority, category, and search queries
-- 📊 **Statistics**: Comprehensive task analytics and reporting
-- 💾 **Data Persistence**: JSON-based storage with automatic saving
-- 🎨 **Rich CLI**: Colored output, progress indicators, and intuitive commands
-- 🔒 **Type Safety**: Rust's ownership system prevents data races and memory errors
-- 📝 **Validation**: Input validation with detailed error messages
-- 🔧 **Extensible**: Modular architecture for easy feature additions
+- Task Management: Add, update, complete, start, and cancel tasks
+- Advanced Filtering: Filter by status, priority, category, and search queries
+- Statistics: Comprehensive task analytics and reporting
+- Data Persistence: JSON-based storage with automatic saving
+- Rich CLI: Colored output, progress indicators, and intuitive commands
+- Type Safety: Rust's ownership system prevents data races and memory errors
+- Validation: Input validation with detailed error messages
+- Extensible: Modular architecture for easy feature additions
 
-## 📦 Installation
+## Installation
 
 ### From Source
 ```bash
-git clone <repository-url>
+git clone https://github.com/mwijanarko1/cli-based-task-manager.git
 cd task-manager
 cargo build --release
 # Binary will be in target/release/task-manager
@@ -25,10 +25,10 @@ cargo build --release
 
 ### Using Cargo
 ```bash
-cargo install --git <repository-url> task-manager
+cargo install --git https://github.com/mwijanarko1/cli-based-task-manager.git task-manager
 ```
 
-## 🛠️ Usage
+## Usage
 
 ### Basic Commands
 
@@ -96,7 +96,7 @@ task-manager list --overdue
 task-manager list --limit 10 --sort due-date-asc
 ```
 
-## 📋 Command Reference
+## Command Reference
 
 ### `add`
 Add a new task to the manager.
@@ -204,7 +204,7 @@ Import tasks from a JSON file.
 task-manager import <FILE>
 ```
 
-## 🔧 Configuration
+## Configuration
 
 ### Environment Variables
 - `TASK_MANAGER_FILE`: Path to the data file (default: `tasks.json`)
@@ -221,7 +221,7 @@ auto_save = true
 verbose = false
 ```
 
-## 📊 Data Model
+## Data Model
 
 ### Task Structure
 ```rust
@@ -240,18 +240,18 @@ struct Task {
 ```
 
 ### Priority Levels
-- 🟢 **Low**: Nice to have
-- 🟡 **Medium**: Should do
-- 🟠 **High**: Important
-- 🔴 **Critical**: Urgent
+- **Low**: Nice to have
+- **Medium**: Should do
+- **High**: Important
+- **Critical**: Urgent
 
 ### Task Status
-- 📋 **TODO**: Not started
-- 🔄 **IN PROGRESS**: Currently working on
-- ✅ **DONE**: Completed
-- ❌ **CANCELLED**: No longer needed
+- **TODO**: Not started
+- **IN PROGRESS**: Currently working on
+- **DONE**: Completed
+- **CANCELLED**: No longer needed
 
-## 🏗️ Architecture
+## Architecture
 
 ### Core Components
 
@@ -269,7 +269,7 @@ struct Task {
 - **Extensibility**: Easy to add new features and commands
 - **Performance**: Efficient data structures and algorithms
 
-## 🔒 Safety & Reliability
+## Safety & Reliability
 
 This tool leverages Rust's ownership and borrowing system to provide:
 
@@ -278,7 +278,7 @@ This tool leverages Rust's ownership and borrowing system to provide:
 - **Type Safety**: Compile-time guarantees about data validity
 - **Resource Management**: Automatic cleanup of resources
 
-## 🧪 Testing
+## Testing
 
 Run the test suite:
 
@@ -292,14 +292,14 @@ Run with coverage (requires tarpaulin):
 cargo tarpaulin
 ```
 
-## 📈 Performance
+## Performance
 
 - **Fast Startup**: Minimal initialization overhead
 - **Efficient Storage**: JSON serialization with minimal memory usage
 - **Scalable**: HashMap-based storage for O(1) task lookups
 - **Low Memory**: No memory leaks, efficient data structures
 
-## 🤝 Contributing
+## Contributing
 
 1. Fork the repository
 2. Create a feature branch: `git checkout -b feature/new-feature`
@@ -307,11 +307,11 @@ cargo tarpaulin
 4. Ensure all tests pass: `cargo test`
 5. Submit a pull request
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - Built with [Rust](https://www.rust-lang.org/) for memory safety and performance
 - CLI powered by [clap](https://github.com/clap-rs/clap)
@@ -319,5 +319,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Date/time handling with [chrono](https://github.com/chronotope/chrono)
 
 ---
-
-**Built for production use with enterprise-grade reliability and safety guarantees.**
