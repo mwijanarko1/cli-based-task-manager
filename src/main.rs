@@ -6,10 +6,29 @@ mod task;
 use clap::Parser;
 use cli::{Cli, Commands};
 use colored::*;
-use error::Result;
+use error::{Result, TaskError};
 use manager::{TaskManager, TaskManagerConfig};
 use std::io::{self, Write};
 use std::path::PathBuf;
+
+/// Maximum size for import files (10MB)
+const MAX_IMPORT_SIZE: u64 = 10 * 1024 * 1024;
+
+/// Maximum length for user input strings
+const MAX_INPUT_LENGTH: usize = 1000;
+
+/// Display constants for formatting
+const UUID_DISPLAY_LENGTH: usize = 8;
+const TITLE_MAX_DISPLAY: usize = 40;
+
+/// Sanitize and validate user input
+fn sanitize_input(input: &str) -> Result<String> {
+    let trimmed = input.trim();
+    if trimmed.len() > MAX_INPUT_LENGTH {
+        return Err(TaskError::ValidationError("Input too long".to_string()));
+    }
+    Ok(trimmed.to_string())
+}
 use tracing::{error, warn, Level};
 use tracing_subscriber;
 
@@ -52,17 +71,18 @@ async fn main() -> Result<()> {
             handle_add(&mut manager, title, description, priority, category, due_date).await
         }
         Commands::List { status, priority, category, overdue, sort, limit, search } => {
-            handle_list(&manager, status, priority, category, overdue, sort, limit, search)
+            handle_list(&manager, status, priority, category, overdue, sort, limit, search).await
         }
-        Commands::Show { id } => handle_show(&manager, &id),
+        Commands::Show { id } => handle_show(&manager, &id).await,
         Commands::Update { id, title, description, priority, category, due_date } => {
             handle_update(&mut manager, &id, title, description, priority, category, due_date).await
         }
-        Commands::Complete { id } => handle_complete(&mut manager, &id).await,
-        Commands::Start { id } => handle_start(&mut manager, &id).await,
-        Commands::Cancel { id } => handle_cancel(&mut manager, &id).await,
-        Commands::Delete { id, force } => handle_delete(&mut manager, &id, force).await,
-        Commands::Stats => handle_stats(&manager),
+        Commands::Complete { id } => handle_complete(&mut manager, id).await,
+        Commands::Start { id } => handle_start(&mut manager, id).await,
+        Commands::Cancel { id } => handle_cancel(&mut manager, id).await,
+        Commands::Delete { id, force } => handle_delete(&mut manager, id, force).await,
+        Commands::DeleteAll { force } => handle_delete_all(&mut manager, force).await,
+        Commands::Stats => handle_stats(&manager).await,
         Commands::Clear { all, force } => handle_clear(&mut manager, all, force).await,
         Commands::Import { file } => handle_import(&mut manager, file).await,
         Commands::Export { file } => handle_export(&manager, file).await,
@@ -79,6 +99,7 @@ async fn main() -> Result<()> {
     result
 }
 
+/// Create a new task with the provided details
 async fn handle_add(
     manager: &mut TaskManager,
     title: String,
@@ -109,7 +130,8 @@ async fn handle_add(
     Ok(())
 }
 
-fn handle_list(
+/// List tasks filtered by the provided criteria and display them in a summary table
+async fn handle_list(
     manager: &TaskManager,
     status: Option<cli::StatusArg>,
     priority: Option<cli::PriorityArg>,
@@ -119,16 +141,19 @@ fn handle_list(
     limit: Option<usize>,
     search: Option<String>,
 ) -> Result<()> {
-    let mut tasks = if let Some(query) = search {
-        manager.search_tasks(&query)
+    let query_str = search.as_deref();
+    let category_str = category.as_deref();
+
+    let mut tasks: Vec<_> = if let Some(query) = query_str {
+        manager.search_tasks(query).collect()
     } else if overdue {
-        manager.get_overdue_tasks()
+        manager.get_overdue_tasks().collect()
     } else if let Some(status) = status {
-        manager.get_tasks_by_status(status.into())
+        manager.get_tasks_by_status(status.into()).collect()
     } else if let Some(priority) = priority {
-        manager.get_tasks_by_priority(priority.into())
-    } else if let Some(category) = category {
-        manager.get_tasks_by_category(&category)
+        manager.get_tasks_by_priority(priority.into()).collect()
+    } else if let Some(category) = category_str {
+        manager.get_tasks_by_category(category).collect()
     } else {
         manager.get_sorted_tasks(sort.into())
     };
@@ -153,7 +178,8 @@ fn handle_list(
     Ok(())
 }
 
-fn handle_show(manager: &TaskManager, id: &str) -> Result<()> {
+/// Display detailed information about a single task, including all metadata and status
+async fn handle_show(manager: &TaskManager, id: &str) -> Result<()> {
     let task = manager.get_task(id)?;
 
     println!("{}", format!("📄 Task Details: {}", task.id).cyan().bold());
@@ -188,6 +214,7 @@ fn handle_show(manager: &TaskManager, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Update an existing task's details selectively
 async fn handle_update(
     manager: &mut TaskManager,
     id: &str,
@@ -197,18 +224,24 @@ async fn handle_update(
     category: Option<String>,
     due_date: Option<String>,
 ) -> Result<()> {
-    let description = description.map(|d| if d.is_empty() { None } else { Some(d) });
-    let category = category.map(|c| if c.is_empty() { None } else { Some(c) });
+    use crate::task::UpdateValue;
+
+    let description = match description {
+        Some(d) if d.is_empty() => UpdateValue::Clear,
+        Some(d) => UpdateValue::Set(d),
+        None => UpdateValue::Keep,
+    };
+    let category = match category {
+        Some(c) if c.is_empty() => UpdateValue::Clear,
+        Some(c) => UpdateValue::Set(c),
+        None => UpdateValue::Keep,
+    };
     let priority = priority.map(|p| p.into());
 
-    let due_date = if let Some(date_str) = due_date {
-        if date_str.is_empty() {
-            Some(None)
-        } else {
-            Some(Some(crate::task::parse_datetime(&date_str)?))
-        }
-    } else {
-        None
+    let due_date = match due_date {
+        Some(d) if d.is_empty() => UpdateValue::Clear,
+        Some(d) => UpdateValue::Set(crate::task::parse_datetime(&d)?),
+        None => UpdateValue::Keep,
     };
 
     manager.update_task(id, title, description, priority, category, due_date)?;
@@ -216,42 +249,94 @@ async fn handle_update(
     Ok(())
 }
 
-async fn handle_complete(manager: &mut TaskManager, id: &str) -> Result<()> {
-    manager.complete_task(id)?;
-    println!("{}", format!("✓ Completed task {}", id).green());
+/// Mark a task as completed, recording completion time
+async fn handle_complete(manager: &mut TaskManager, id: Option<String>) -> Result<()> {
+    let task_id = match id {
+        Some(id) => id,
+        None => select_task_interactive(manager).await?,
+    };
+
+    manager.complete_task(&task_id)?;
+    println!("{}", format!("✓ Completed task {}", task_id).green());
     Ok(())
 }
 
-async fn handle_start(manager: &mut TaskManager, id: &str) -> Result<()> {
-    manager.start_task(id)?;
-    println!("{}", format!("▶ Started working on task {}", id).green());
+/// Mark a task as being worked on (In Progress)
+async fn handle_start(manager: &mut TaskManager, id: Option<String>) -> Result<()> {
+    let task_id = match id {
+        Some(id) => id,
+        None => select_task_interactive(manager).await?,
+    };
+
+    manager.start_task(&task_id)?;
+    println!("{}", format!("▶ Started working on task {}", task_id).green());
     Ok(())
 }
 
-async fn handle_cancel(manager: &mut TaskManager, id: &str) -> Result<()> {
-    manager.cancel_task(id)?;
-    println!("{}", format!("❌ Cancelled task {}", id).yellow());
+/// Mark a task as cancelled
+async fn handle_cancel(manager: &mut TaskManager, id: Option<String>) -> Result<()> {
+    let task_id = match id {
+        Some(id) => id,
+        None => select_task_interactive(manager).await?,
+    };
+
+    manager.cancel_task(&task_id)?;
+    println!("{}", format!("❌ Cancelled task {}", task_id).yellow());
     Ok(())
 }
 
-async fn handle_delete(manager: &mut TaskManager, id: &str, force: bool) -> Result<()> {
+/// Delete a task permanently, with a confirmation prompt unless forced
+async fn handle_delete(manager: &mut TaskManager, id: Option<String>, force: bool) -> Result<()> {
+    let task_id = match id {
+        Some(id) => id,
+        None => select_task_interactive(manager).await?,
+    };
+
     if !force {
-        print!("Are you sure you want to delete task {}? (y/N): ", id);
+        print!("Are you sure you want to delete task {}? (y/N): ", task_id);
         io::stdout().flush()?;
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
-        if !input.trim().eq_ignore_ascii_case("y") && !input.trim().eq_ignore_ascii_case("yes") {
+        let input = sanitize_input(&input)?;
+        if !input.eq_ignore_ascii_case("y") && !input.eq_ignore_ascii_case("yes") {
             println!("{}", "Operation cancelled.".yellow());
             return Ok(());
         }
     }
 
-    manager.delete_task(id)?;
-    println!("{}", format!("🗑 Deleted task {}", id).red());
+    manager.delete_task(&task_id)?;
+    println!("{}", format!("🗑 Deleted task {}", task_id).red());
     Ok(())
 }
 
-fn handle_stats(manager: &TaskManager) -> Result<()> {
+/// Bulk delete operation for all tasks with a double-confirmation prompt
+async fn handle_delete_all(manager: &mut TaskManager, force: bool) -> Result<()> {
+    let count = manager.get_all_tasks().count();
+
+    if count == 0 {
+        println!("{}", "No tasks to delete.".yellow());
+        return Ok(());
+    }
+
+    if !force {
+        print!("Are you sure you want to delete ALL {} tasks? This action cannot be undone. (y/N): ", count);
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let input = sanitize_input(&input)?;
+        if !input.eq_ignore_ascii_case("y") && !input.eq_ignore_ascii_case("yes") {
+            println!("{}", "Operation cancelled.".yellow());
+            return Ok(());
+        }
+    }
+
+    let removed = manager.clear_all();
+    println!("{}", format!("🗑 Deleted all {} tasks", removed).red().bold());
+    Ok(())
+}
+
+/// Display aggregate task statistics including completion rate and status counts
+async fn handle_stats(manager: &TaskManager) -> Result<()> {
     let stats = manager.get_stats();
 
     println!("{}", "📊 Task Statistics".cyan().bold());
@@ -266,9 +351,10 @@ fn handle_stats(manager: &TaskManager) -> Result<()> {
     Ok(())
 }
 
+/// Clear tasks based on status, supporting both completed-only and all tasks
 async fn handle_clear(manager: &mut TaskManager, all: bool, force: bool) -> Result<()> {
-    let count = if all { manager.get_all_tasks().len() } else {
-        manager.get_tasks_by_status(crate::task::TaskStatus::Done).len()
+    let count = if all { manager.get_all_tasks().count() } else {
+        manager.get_tasks_by_status(crate::task::TaskStatus::Done).count()
     };
 
     if !force {
@@ -282,7 +368,8 @@ async fn handle_clear(manager: &mut TaskManager, all: bool, force: bool) -> Resu
         io::stdout().flush()?;
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
-        if !input.trim().eq_ignore_ascii_case("y") && !input.trim().eq_ignore_ascii_case("yes") {
+        let input = sanitize_input(&input)?;
+        if !input.eq_ignore_ascii_case("y") && !input.eq_ignore_ascii_case("yes") {
             println!("{}", "Operation cancelled.".yellow());
             return Ok(());
         }
@@ -298,25 +385,35 @@ async fn handle_clear(manager: &mut TaskManager, all: bool, force: bool) -> Resu
     Ok(())
 }
 
+/// Import tasks from a JSON file with validation and duplicate skipping
 async fn handle_import(manager: &mut TaskManager, file: PathBuf) -> Result<()> {
-    let data = tokio::fs::read_to_string(&file).await?;
-    let imported_tasks: Vec<crate::task::Task> = serde_json::from_str(&data)?;
+    // Canonicalize path to prevent directory traversal
+    let file = file.canonicalize().map_err(|e| TaskError::FileOperationError(
+        format!("Invalid file path: {}", e)
+    ))?;
 
-    let mut imported_count = 0;
-    for task in imported_tasks {
-        if !manager.tasks.contains_key(&task.id.to_string()) {
-            manager.tasks.insert(task.id.to_string(), task);
-            imported_count += 1;
-        }
+    // Check file size before reading
+    let metadata: std::fs::Metadata = tokio::fs::metadata(&file).await?;
+    if metadata.len() > MAX_IMPORT_SIZE {
+        return Err(TaskError::FileOperationError(
+            format!("File too large: {} bytes (max: {} bytes)", metadata.len(), MAX_IMPORT_SIZE)
+        ));
     }
 
-    manager.dirty = true;
+    // Read file data
+    let data = tokio::fs::read(&file).await?;
+    let imported_tasks: Vec<crate::task::Task> = serde_json::from_slice(&data)?;
+
+    // Use the manager's import method for validation and safe insertion
+    let imported_count = manager.import_tasks(imported_tasks)?;
+
     println!("{}", format!("📥 Imported {} tasks from {}", imported_count, file.display()).green());
     Ok(())
 }
 
+/// Export all tasks currently in memory to a JSON file
 async fn handle_export(manager: &TaskManager, file: PathBuf) -> Result<()> {
-    let tasks: Vec<&crate::task::Task> = manager.tasks.values().collect();
+    let tasks: Vec<&crate::task::Task> = manager.get_all_tasks().collect();
     let data = serde_json::to_string_pretty(&tasks)?;
 
     if let Some(parent) = file.parent() {
@@ -326,6 +423,48 @@ async fn handle_export(manager: &TaskManager, file: PathBuf) -> Result<()> {
     tokio::fs::write(&file, data).await?;
     println!("{}", format!("📤 Exported {} tasks to {}", tasks.len(), file.display()).green());
     Ok(())
+}
+
+/// Interactively select a task from a numbered list of all available tasks
+async fn select_task_interactive(manager: &TaskManager) -> Result<String> {
+    let tasks = manager.get_sorted_tasks(crate::manager::TaskSort::CreatedDesc);
+
+    if tasks.is_empty() {
+        println!("{}", "No tasks available to select.".yellow());
+        return Err(TaskError::ValidationError("No tasks available".to_string()));
+    }
+
+    println!("{}", "Select a task:".cyan().bold());
+    println!("{}", "─".repeat(80).dimmed());
+
+    for (i, task) in tasks.iter().enumerate() {
+        print!("{}: ", format!("{:2}", i + 1).bold());
+        print_task_summary(task);
+    }
+
+    println!("{}", "─".repeat(80).dimmed());
+    print!("Enter task number (1-{}) or 'q' to cancel: ", tasks.len());
+
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let input = sanitize_input(&input)?;
+
+    if input.eq_ignore_ascii_case("q") || input.eq_ignore_ascii_case("quit") {
+        println!("{}", "Selection cancelled.".yellow());
+        return Err(TaskError::ValidationError("Selection cancelled".to_string()));
+    }
+
+    match input.parse::<usize>() {
+        Ok(num) if num >= 1 && num <= tasks.len() => {
+            let selected_task = &tasks[num - 1];
+            Ok(selected_task.id.to_string())
+        }
+        _ => {
+            println!("{}", "Invalid selection.".red());
+            Err(TaskError::ValidationError("Invalid task selection".to_string()))
+        }
+    }
 }
 
 /// Print a summary of a task
@@ -344,9 +483,9 @@ fn print_task_summary(task: &crate::task::Task) {
         crate::task::Priority::Critical => "🔴",
     };
 
-    let id = format!("{}...", &task.id.to_string()[..8]);
-    let title = if task.title.len() > 40 {
-        format!("{}...", &task.title[..37])
+    let id = format!("{}...", task.id.to_string().get(..UUID_DISPLAY_LENGTH).unwrap_or(&task.id.to_string()));
+    let title = if task.title.len() > TITLE_MAX_DISPLAY {
+        format!("{}...", task.title.get(..TITLE_MAX_DISPLAY - 3).unwrap_or(&task.title))
     } else {
         task.title.clone()
     };

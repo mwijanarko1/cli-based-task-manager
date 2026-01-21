@@ -3,7 +3,20 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
 
-/// Priority levels for tasks
+/// Enum for update operations that distinguishes between keeping, clearing, or setting a value
+#[derive(Debug, Clone)]
+pub enum UpdateValue<T> {
+    /// Keep the current value unchanged
+    Keep,
+    /// Clear the value (set to None)
+    Clear,
+    /// Set to a new value
+    Set(T),
+}
+
+/// Priority levels for tasks.
+///
+/// Implements `PartialOrd` and `Ord` where Critical > High > Medium > Low.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Priority {
@@ -13,17 +26,25 @@ pub enum Priority {
     Critical = 4,
 }
 
-/// Status of a task
+/// Status of a task representing its lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TaskStatus {
+    /// Task has been created but not started
     Todo,
+    /// Task is currently being worked on
     InProgress,
+    /// Task has been finished successfully
     Done,
+    /// Task has been cancelled and will not be completed
     Cancelled,
 }
 
 /// Comprehensive task model for enterprise use
+///
+/// A Task represents a single work item with all necessary metadata
+/// for enterprise task management including validation, serialization,
+/// and status tracking.
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct Task {
     /// Unique identifier for the task
@@ -61,7 +82,9 @@ pub struct Task {
 }
 
 impl Task {
-    /// Create a new task with default values
+    /// Create a new task with default values and a random UUID.
+    ///
+    /// Sets priority to Medium and status to Todo.
     pub fn new(title: String) -> Self {
         let now = Utc::now();
         Self {
@@ -78,7 +101,9 @@ impl Task {
         }
     }
 
-    /// Create a task with all fields specified
+    /// Create a task with all fields specified and a random UUID.
+    ///
+    /// Sets status to Todo by default.
     pub fn with_details(
         title: String,
         description: Option<String>,
@@ -101,46 +126,55 @@ impl Task {
         }
     }
 
-    /// Mark task as completed
+    /// Mark task as completed, setting status to Done and record completion time.
     pub fn complete(&mut self) {
         self.status = TaskStatus::Done;
         self.completed_at = Some(Utc::now());
         self.updated_at = Utc::now();
     }
 
-    /// Mark task as in progress
+    /// Mark task as in progress, setting status to InProgress.
     pub fn start(&mut self) {
         self.status = TaskStatus::InProgress;
         self.updated_at = Utc::now();
     }
 
-    /// Mark task as cancelled
+    /// Mark task as cancelled, setting status to Cancelled.
     pub fn cancel(&mut self) {
         self.status = TaskStatus::Cancelled;
         self.updated_at = Utc::now();
     }
 
-    /// Update task details
-    pub fn update(&mut self, title: Option<String>, description: Option<Option<String>>, priority: Option<Priority>, category: Option<Option<String>>, due_date: Option<Option<DateTime<Utc>>>) {
+    /// Update task details selectively based on the provided options.
+    ///
+    /// Uses `UpdateValue` to determine whether to keep, clear, or set new values
+    /// for description, category, and due date.
+    pub fn update(&mut self, title: Option<String>, description: UpdateValue<String>, priority: Option<Priority>, category: UpdateValue<String>, due_date: UpdateValue<DateTime<Utc>>) {
         if let Some(title) = title {
             self.title = title;
         }
-        if let Some(description) = description {
-            self.description = description;
+        match description {
+            UpdateValue::Set(desc) => self.description = Some(desc),
+            UpdateValue::Clear => self.description = None,
+            UpdateValue::Keep => {} // Keep current value
         }
         if let Some(priority) = priority {
             self.priority = priority;
         }
-        if let Some(category) = category {
-            self.category = category;
+        match category {
+            UpdateValue::Set(cat) => self.category = Some(cat),
+            UpdateValue::Clear => self.category = None,
+            UpdateValue::Keep => {} // Keep current value
         }
-        if let Some(due_date) = due_date {
-            self.due_date = due_date;
+        match due_date {
+            UpdateValue::Set(date) => self.due_date = Some(date),
+            UpdateValue::Clear => self.due_date = None,
+            UpdateValue::Keep => {} // Keep current value
         }
         self.updated_at = Utc::now();
     }
 
-    /// Check if task is overdue
+    /// Returns true if the task is not completed and its due date has passed.
     pub fn is_overdue(&self) -> bool {
         if let Some(due_date) = self.due_date {
             self.status != TaskStatus::Done && Utc::now() > due_date
@@ -149,7 +183,7 @@ impl Task {
         }
     }
 
-    /// Get formatted status string
+    /// Get formatted status string with emoji for CLI display.
     pub fn status_display(&self) -> &'static str {
         match self.status {
             TaskStatus::Todo => "📋 TODO",
@@ -159,7 +193,7 @@ impl Task {
         }
     }
 
-    /// Get formatted priority string
+    /// Get formatted priority string with emoji for CLI display.
     pub fn priority_display(&self) -> &'static str {
         match self.priority {
             Priority::Low => "🟢 LOW",
@@ -183,4 +217,78 @@ pub fn parse_datetime(date_str: &str) -> crate::error::Result<DateTime<Utc>> {
         .map_err(|_| crate::error::TaskError::DateParseError(
             format!("Invalid date format: {}. Use ISO 8601 format like '2024-01-01T12:00:00Z'", date_str)
         ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_task_creation() {
+        let task = Task::new("Test Task".to_string());
+        assert_eq!(task.title, "Test Task");
+        assert_eq!(task.status, TaskStatus::Todo);
+        assert_eq!(task.priority, Priority::Medium);
+        assert!(task.description.is_none());
+        assert!(task.category.is_none());
+        assert!(task.due_date.is_none());
+        assert!(task.completed_at.is_none());
+    }
+
+    #[test]
+    fn test_task_completion() {
+        let mut task = Task::new("Test Task".to_string());
+        let before_complete = task.updated_at;
+
+        task.complete();
+
+        assert_eq!(task.status, TaskStatus::Done);
+        assert!(task.completed_at.is_some());
+        assert!(task.updated_at >= before_complete);
+    }
+
+    #[test]
+    fn test_task_update_with_enum() {
+        let mut task = Task::new("Original".to_string());
+        task.description = Some("Original desc".to_string());
+        task.category = Some("Work".to_string());
+
+        task.update(
+            Some("Updated".to_string()),
+            UpdateValue::Set("New desc".to_string()),
+            Some(Priority::High),
+            UpdateValue::Clear,
+            UpdateValue::Keep,
+        );
+
+        assert_eq!(task.title, "Updated");
+        assert_eq!(task.description, Some("New desc".to_string()));
+        assert_eq!(task.priority, Priority::High);
+        assert!(task.category.is_none()); // Cleared
+    }
+
+    #[test]
+    fn test_task_is_overdue() {
+        let past_date = Utc::now() - chrono::Duration::hours(1);
+        let future_date = Utc::now() + chrono::Duration::hours(1);
+
+        let overdue_task = Task::with_details(
+            "Overdue".to_string(),
+            None,
+            Priority::High,
+            None,
+            Some(past_date),
+        );
+
+        let upcoming_task = Task::with_details(
+            "Upcoming".to_string(),
+            None,
+            Priority::High,
+            None,
+            Some(future_date),
+        );
+
+        assert!(overdue_task.is_overdue());
+        assert!(!upcoming_task.is_overdue());
+    }
 }

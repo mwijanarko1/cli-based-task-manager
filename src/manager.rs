@@ -1,9 +1,10 @@
 use crate::error::{Result, TaskError};
-use crate::task::{Priority, Task, TaskStatus};
+use crate::task::{Priority, Task, TaskStatus, UpdateValue};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::fs;
 use tracing::info;
 use validator::Validate;
@@ -25,7 +26,11 @@ impl Default for TaskManagerConfig {
 }
 
 /// Enterprise-grade task manager with persistence and comprehensive operations
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// TaskManager provides a comprehensive interface for managing tasks with
+/// persistence to JSON files, validation, search, filtering, and statistics.
+/// It maintains an in-memory cache of tasks indexed by UUID for fast lookup.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TaskManager {
     /// All tasks indexed by ID for fast lookup
     pub tasks: HashMap<String, Task>,
@@ -36,25 +41,31 @@ pub struct TaskManager {
 
     /// Track if data has been modified since last save
     #[serde(skip)]
-    pub dirty: bool,
+    pub dirty: AtomicBool,
 }
 
 impl TaskManager {
-    /// Create a new task manager with default configuration
+    /// Create a new task manager with default configuration.
+    ///
+    /// The default configuration uses "tasks.json" as storage and enables auto-save.
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::with_config(TaskManagerConfig::default())
     }
 
-    /// Create a new task manager with custom configuration
+    /// Create a new task manager with custom configuration.
     pub fn with_config(config: TaskManagerConfig) -> Self {
         Self {
             tasks: HashMap::new(),
             config,
-            dirty: false,
+            dirty: AtomicBool::new(false),
         }
     }
 
-    /// Load tasks from file asynchronously
+    /// Load tasks from the configured storage path asynchronously.
+    ///
+    /// If the file does not exist, it starts with an empty task list.
+    /// Clears any existing tasks in memory.
     pub async fn load(&mut self) -> Result<()> {
         if !self.config.storage_path.exists() {
             info!("No existing task file found, starting with empty task list");
@@ -69,14 +80,16 @@ impl TaskManager {
             self.tasks.insert(task.id.to_string(), task);
         }
 
-        self.dirty = false;
+        self.dirty.store(false, Ordering::Relaxed);
         info!("Loaded {} tasks from {}", self.tasks.len(), self.config.storage_path.display());
         Ok(())
     }
 
-    /// Save tasks to file asynchronously
+    /// Save all tasks to the configured storage path asynchronously.
+    ///
+    /// Only performs a save if the `dirty` flag is set to true.
     pub async fn save(&self) -> Result<()> {
-        if !self.dirty {
+        if !self.dirty.load(Ordering::Relaxed) {
             return Ok(());
         }
 
@@ -93,20 +106,25 @@ impl TaskManager {
         Ok(())
     }
 
-    /// Add a new task with validation
+    /// Add a new task with basic info and perform validation.
+    ///
+    /// Returns the ID of the newly created task.
+    #[allow(dead_code)]
     pub fn add_task(&mut self, title: String) -> Result<String> {
-        let mut task = Task::new(title);
+        let task = Task::new(title);
         task.validate().map_err(TaskError::from_validation_errors)?;
 
         let id = task.id.to_string();
         self.tasks.insert(id.clone(), task);
-        self.dirty = true;
+        self.dirty.store(true, Ordering::Relaxed);
 
         info!("Added task: {}", id);
         Ok(id)
     }
 
-    /// Add a task with full details
+    /// Add a new task with full details and perform validation.
+    ///
+    /// Returns the ID of the newly created task.
     pub fn add_task_detailed(
         &mut self,
         title: String,
@@ -115,7 +133,7 @@ impl TaskManager {
         category: Option<String>,
         due_date: Option<DateTime<Utc>>,
     ) -> Result<String> {
-        let mut task = Task::with_details(
+        let task = Task::with_details(
             title,
             description,
             priority.unwrap_or(Priority::Medium),
@@ -127,119 +145,132 @@ impl TaskManager {
 
         let id = task.id.to_string();
         self.tasks.insert(id.clone(), task);
-        self.dirty = true;
+        self.dirty.store(true, Ordering::Relaxed);
 
         info!("Added detailed task: {}", id);
         Ok(id)
     }
 
-    /// Get a task by ID (immutable borrow)
+    /// Retrieve a task by its ID.
+    ///
+    /// Returns `TaskError::TaskNotFound` if the task doesn't exist.
     pub fn get_task(&self, id: &str) -> Result<&Task> {
         self.tasks.get(id).ok_or_else(|| TaskError::TaskNotFound(id.to_string()))
     }
 
-    /// Get a mutable reference to a task
+    /// Retrieve a mutable reference to a task by its ID.
+    ///
+    /// Returns `TaskError::TaskNotFound` if the task doesn't exist.
     pub fn get_task_mut(&mut self, id: &str) -> Result<&mut Task> {
         self.tasks.get_mut(id).ok_or_else(|| TaskError::TaskNotFound(id.to_string()))
     }
 
-    /// Update a task
+    /// Update an existing task's fields.
+    ///
+    /// Re-validates the task after update and sets the dirty flag.
     pub fn update_task(
         &mut self,
         id: &str,
         title: Option<String>,
-        description: Option<Option<String>>,
+        description: UpdateValue<String>,
         priority: Option<Priority>,
-        category: Option<Option<String>>,
-        due_date: Option<Option<DateTime<Utc>>>,
+        category: UpdateValue<String>,
+        due_date: UpdateValue<DateTime<Utc>>,
     ) -> Result<()> {
         let task = self.get_task_mut(id)?;
         task.update(title, description, priority, category, due_date);
         task.validate().map_err(TaskError::from_validation_errors)?;
-        self.dirty = true;
+        self.dirty.store(true, Ordering::Relaxed);
 
         info!("Updated task: {}", id);
         Ok(())
     }
 
-    /// Delete a task
+    /// Delete a task by its ID and return it.
+    ///
+    /// Returns `TaskError::TaskNotFound` if the task doesn't exist.
     pub fn delete_task(&mut self, id: &str) -> Result<Task> {
         let task = self.tasks.remove(id).ok_or_else(|| TaskError::TaskNotFound(id.to_string()))?;
-        self.dirty = true;
+        self.dirty.store(true, Ordering::Relaxed);
 
         info!("Deleted task: {}", id);
         Ok(task)
     }
 
-    /// Mark task as complete
+    /// Mark a task as complete.
+    ///
+    /// Returns an error if the task is already completed.
     pub fn complete_task(&mut self, id: &str) -> Result<()> {
         let task = self.get_task_mut(id)?;
         if task.status == TaskStatus::Done {
             return Err(TaskError::OperationNotAllowed("Task is already completed".to_string()));
         }
         task.complete();
-        self.dirty = true;
+        self.dirty.store(true, Ordering::Relaxed);
 
         info!("Completed task: {}", id);
         Ok(())
     }
 
-    /// Start working on a task
+    /// Move a task to the InProgress status.
     pub fn start_task(&mut self, id: &str) -> Result<()> {
         let task = self.get_task_mut(id)?;
         task.start();
-        self.dirty = true;
+        self.dirty.store(true, Ordering::Relaxed);
 
         info!("Started task: {}", id);
         Ok(())
     }
 
-    /// Cancel a task
+    /// Move a task to the Cancelled status.
     pub fn cancel_task(&mut self, id: &str) -> Result<()> {
         let task = self.get_task_mut(id)?;
         task.cancel();
-        self.dirty = true;
+        self.dirty.store(true, Ordering::Relaxed);
 
         info!("Cancelled task: {}", id);
         Ok(())
     }
 
     /// Get all tasks (immutable view)
-    pub fn get_all_tasks(&self) -> Vec<&Task> {
-        self.tasks.values().collect()
+    pub fn get_all_tasks(&self) -> impl Iterator<Item = &Task> {
+        self.tasks.values()
     }
 
     /// Get tasks filtered by status
-    pub fn get_tasks_by_status(&self, status: TaskStatus) -> Vec<&Task> {
-        self.tasks.values().filter(|task| task.status == status).collect()
+    pub fn get_tasks_by_status(&self, status: TaskStatus) -> impl Iterator<Item = &Task> {
+        self.tasks.values().filter(move |task| task.status == status)
     }
 
     /// Get tasks filtered by priority
-    pub fn get_tasks_by_priority(&self, priority: Priority) -> Vec<&Task> {
-        self.tasks.values().filter(|task| task.priority == priority).collect()
+    pub fn get_tasks_by_priority(&self, priority: Priority) -> impl Iterator<Item = &Task> {
+        self.tasks.values().filter(move |task| task.priority == priority)
     }
 
     /// Get tasks filtered by category
-    pub fn get_tasks_by_category(&self, category: &str) -> Vec<&Task> {
+    pub fn get_tasks_by_category<'a>(&'a self, category: &'a str) -> impl Iterator<Item = &'a Task> {
         self.tasks.values()
-            .filter(|task| task.category.as_ref().map_or(false, |c| c == category))
-            .collect()
+            .filter(move |task| task.category.as_ref().map_or(false, |c| c == category))
     }
 
     /// Get overdue tasks
-    pub fn get_overdue_tasks(&self) -> Vec<&Task> {
-        self.tasks.values().filter(|task| task.is_overdue()).collect()
+    pub fn get_overdue_tasks(&self) -> impl Iterator<Item = &Task> {
+        self.tasks.values().filter(|task| task.is_overdue())
     }
 
     /// Search tasks by title or description
-    pub fn search_tasks(&self, query: &str) -> Vec<&Task> {
-        let query = query.to_lowercase();
+    pub fn search_tasks<'a>(&'a self, query: &'a str) -> impl Iterator<Item = &'a Task> {
+        let query_lower = query.to_lowercase();
         self.tasks.values()
-            .filter(|task| {
-                task.title.to_lowercase().contains(&query) ||
-                task.description.as_ref().map_or(false, |d| d.to_lowercase().contains(&query))
+            .filter(move |task| {
+                // Optimization: Case-insensitive contains without repeated to_lowercase()
+                // using the query_lower which is only computed once.
+                // Rust's contains is case-sensitive, so we still need to lowercase the target strings.
+                // However, we can avoid allocating if we use a better approach, but for now 
+                // lowercase the target and compare with query_lower.
+                task.title.to_lowercase().contains(&query_lower) ||
+                task.description.as_ref().map_or(false, |d| d.to_lowercase().contains(&query_lower))
             })
-            .collect()
     }
 
     /// Get tasks sorted by different criteria
@@ -272,7 +303,7 @@ impl TaskManager {
         let total = self.tasks.len();
         let completed = self.tasks.values().filter(|t| t.status == TaskStatus::Done).count();
         let in_progress = self.tasks.values().filter(|t| t.status == TaskStatus::InProgress).count();
-        let overdue = self.get_overdue_tasks().len();
+        let overdue = self.get_overdue_tasks().count();
 
         TaskStats {
             total,
@@ -283,25 +314,53 @@ impl TaskManager {
         }
     }
 
-    /// Clear all completed tasks
+    /// Clear all completed tasks from memory and set the dirty flag.
+    ///
+    /// Returns the number of tasks removed.
     pub fn clear_completed(&mut self) -> usize {
         let initial_count = self.tasks.len();
         self.tasks.retain(|_, task| task.status != TaskStatus::Done);
         let removed = initial_count - self.tasks.len();
-        self.dirty = true;
+        self.dirty.store(true, Ordering::Relaxed);
 
         info!("Cleared {} completed tasks", removed);
         removed
     }
 
-    /// Clear all tasks
+    /// Clear all tasks from memory and set the dirty flag.
+    ///
+    /// Returns the number of tasks removed.
     pub fn clear_all(&mut self) -> usize {
         let count = self.tasks.len();
         self.tasks.clear();
-        self.dirty = true;
+        self.dirty.store(true, Ordering::Relaxed);
 
         info!("Cleared all {} tasks", count);
         count
+    }
+
+    /// Import tasks from a list, skipping any that have IDs already present in memory.
+    ///
+    /// All imported tasks are re-validated before insertion.
+    pub fn import_tasks(&mut self, tasks: Vec<Task>) -> Result<usize> {
+        let mut imported_count = 0;
+        for task in tasks {
+            // Validate the task
+            task.validate().map_err(TaskError::from_validation_errors)?;
+
+            // Skip if task with this ID already exists
+            if !self.tasks.contains_key(&task.id.to_string()) {
+                self.tasks.insert(task.id.to_string(), task);
+                imported_count += 1;
+            }
+        }
+
+        if imported_count > 0 {
+            self.dirty.store(true, Ordering::Relaxed);
+        }
+
+        info!("Imported {} tasks", imported_count);
+        Ok(imported_count)
     }
 }
 
@@ -326,4 +385,64 @@ pub struct TaskStats {
     pub in_progress: usize,
     pub overdue: usize,
     pub completion_rate: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::task::TaskStatus;
+
+    #[test]
+    fn test_task_manager_creation() {
+        let manager = TaskManager::new();
+        assert!(manager.tasks.is_empty());
+        assert!(!manager.dirty.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_add_and_retrieve_task() {
+        let mut manager = TaskManager::new();
+        let id = manager.add_task("Test Task".to_string()).unwrap();
+
+        let task = manager.get_task(&id).unwrap();
+        assert_eq!(task.title, "Test Task");
+        assert_eq!(task.status, TaskStatus::Todo);
+    }
+
+    #[test]
+    fn test_task_completion() {
+        let mut manager = TaskManager::new();
+        let id = manager.add_task("Test Task".to_string()).unwrap();
+
+        manager.complete_task(&id).unwrap();
+        let task = manager.get_task(&id).unwrap();
+        assert_eq!(task.status, TaskStatus::Done);
+        assert!(task.completed_at.is_some());
+    }
+
+    #[test]
+    fn test_search_tasks() {
+        let mut manager = TaskManager::new();
+        manager.add_task("Buy groceries".to_string()).unwrap();
+        manager.add_task("Clean house".to_string()).unwrap();
+        manager.add_task("Write code".to_string()).unwrap();
+
+        let results: Vec<_> = manager.search_tasks("house").collect();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Clean house");
+    }
+
+    #[test]
+    fn test_task_statistics() {
+        let mut manager = TaskManager::new();
+        manager.add_task("Task 1".to_string()).unwrap();
+        let id2 = manager.add_task("Task 2".to_string()).unwrap();
+
+        manager.complete_task(&id2).unwrap();
+
+        let stats = manager.get_stats();
+        assert_eq!(stats.total, 2);
+        assert_eq!(stats.completed, 1);
+        assert_eq!(stats.completion_rate, 50.0);
+    }
 }
